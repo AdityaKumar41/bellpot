@@ -1,0 +1,21 @@
+# BellPot site blocks for the VPS Caddyfile. Caddy terminates TLS. The Next.js site is pm2 bellpot-web on
+# 127.0.0.1:3000; /api/* is the Node API (pm2 bellpot-api on 127.0.0.1:5041). The devnet app lives on its own
+# subdomain; the apex redirects there until a mainnet app exists.
+devnet.bellpot.xyz {
+	encode zstd gzip
+	handle /api/* {
+		reverse_proxy 127.0.0.1:5041
+	}
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+}
+
+bellpot.xyz, www.bellpot.xyz {
+	redir https://devnet.bellpot.xyz{uri} 302
+}

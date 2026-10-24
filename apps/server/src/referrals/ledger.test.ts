@@ -1,0 +1,104 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { REFEREE_BPS, bind, bindMessage, codeFor, earnings, ensureCode, load, normalizeCode, parseSiws, pending, save, siwsStatement, tierBps } from "./ledger.ts";
+
+const A = "DaBB7D5A6kEMrZzhfiaWN4XvykZBGK5J6PEX58zQVPmT", B = "FfZbH33d4ws3LB9Bdx7abSCvXKThBmtS18LWdSizQVYj", C = "op2Ve6ehakzUNvRgwZNQxAEL9SXMPBDrA3uzG9WwSfF";
+const MINT = "ESrJMtPaTTm2x5KzasvHQtZGbYwfXsoB89umc1FhCR8q";
+const row = (owner, fee, extra = {}) => ({ owner, fee: String(fee), mint: MINT, token: "NVDAx", decimals: 8, multiplier: 1, close: 200, id: 1, ...extra });
+
+test("codes are deterministic, 6 chars, and survive 0/O 1/I/L typos", () => {
+  assert.equal(codeFor(A), codeFor(A));
+  assert.match(codeFor(A), /^[A-Z0-9]{6}$/);
+  assert.notEqual(codeFor(A), codeFor(B));
+  assert.equal(normalizeCode(" abc0il "), "ABC011");
+});
+
+test("ensureCode is idempotent and resolves a collision by lengthening", () => {
+  const db = load("/nonexistent");
+  const a = ensureCode(db, A); assert.equal(a.created, true);
+  assert.deepEqual(ensureCode(db, A), { code: a.code, created: false });
+  db.codes[codeFor(B)] = "someone-else";                          // simulate a clash on B's 6-char code
+  assert.equal(ensureCode(db, B).code, codeFor(B, 7));
+});
+
+test("bind rules: unknown code, self, second code refused; same code twice is a no-op", () => {
+  const db = load("/nonexistent"); const { code } = ensureCode(db, A);
+  assert.equal(bind(db, { wallet: B, code: "ZZZZZZ", cluster: "devnet" }).error, "unknown referral code");
+  assert.equal(bind(db, { wallet: A, code, cluster: "devnet" }).error, "you cannot refer yourself");
+  assert.deepEqual(bind(db, { wallet: B, code: code.toLowerCase(), cluster: "devnet" }), { ok: true });
+  assert.equal(bind(db, { wallet: B, code, cluster: "mainnet" }).already, true);
+  ensureCode(db, C);
+  assert.match(bind(db, { wallet: B, code: codeFor(C), cluster: "devnet" }).error, /already bound/);
+  assert.equal(db.bindings[B].referrer, A);
+});
+
+test("bind rules: a ring (A refers B, B refers A, or through C) is refused", () => {
+  const db = load("/nonexistent"); ensureCode(db, A); ensureCode(db, B); ensureCode(db, C);
+  assert.deepEqual(bind(db, { wallet: B, code: codeFor(A), cluster: "devnet" }), { ok: true });
+  assert.match(bind(db, { wallet: A, code: codeFor(B), cluster: "devnet" }).error, /circle/);
+  assert.deepEqual(bind(db, { wallet: C, code: codeFor(B), cluster: "devnet" }), { ok: true });          // A → B → C
+  assert.match(bind(db, { wallet: A, code: codeFor(C), cluster: "devnet" }).error, /circle/);            // C → A would close it
+});
+
+test("bind message names the site and the time; a SIWS message parses back to domain, wallet, code, issue time", () => {
+  assert.equal(bindMessage(A, "ABC234", "devnet.bellpot.xyz", 1700000000), `bellpot-referral v2\ndomain=devnet.bellpot.xyz\nwallet=${A}\ncode=ABC234\nts=1700000000`);
+  const text = `devnet.bellpot.xyz wants you to sign in with your Solana account:\n${A}\n\n${siwsStatement("ABC234")}\n\nURI: https://devnet.bellpot.xyz/\nVersion: 1\nChain ID: devnet\nNonce: ABC234x1\nIssued At: 2026-09-18T03:00:00.000Z`;
+  assert.deepEqual(parseSiws(text), { domain: "devnet.bellpot.xyz", address: A, code: "ABC234", issuedAt: "2026-09-18T03:00:00.000Z" });
+  assert.equal(parseSiws(text.replace("Apply BellPot referral code", "Log in with code")), null);
+  assert.equal(parseSiws("hello"), null);
+});
+
+test("tiers: 20 % below 10k points, 25 % from 10k, 30 % from 100k", () => {
+  assert.equal(tierBps(0), 2000); assert.equal(tierBps(9999), 2000); assert.equal(tierBps(10_000), 2500); assert.equal(tierBps(100_000), 3000);
+});
+
+test("earnings: referrer gets tier share of the referee's fee, referee gets 10 % back, in the pool's token", () => {
+  const db = load("/nonexistent"); const { code } = ensureCode(db, A); bind(db, { wallet: B, code, cluster: "devnet" });
+  // B won: fee 0.09 NVDAx (= 3 shares × 3 %) on a $200 close; C is unbound and earns nobody anything
+  const e = earnings([row(B, 9_000_000), row(C, 9_000_000), row(B, 0)], db, () => 0);
+  const a = e.byWallet.get(A), b = e.byWallet.get(B);
+  assert.equal(a.referred.size, 1);
+  assert.equal(a.earned.get(MINT).raw, 1_800_000n);                 // 20 % of 0.09 = 0.018 NVDAx
+  assert.equal(a.earned.get(MINT).usd, 0.018 * 200);
+  assert.equal(b.earned.get(MINT).raw, 900_000n);                   // 10 % back
+  assert.equal(b.earned.get(MINT).asReferee, 900_000n);
+  assert.equal(e.byWallet.has(C), false);
+  // a referrer with 10k points is on the 25 % tier
+  const e2 = earnings([row(B, 9_000_000)], db, (w) => (w === A ? 10_000 : 0));
+  assert.equal(e2.byWallet.get(A).earned.get(MINT).raw, 2_250_000n);
+});
+
+test("pending = earned − paid, per wallet and mint; fully paid entries disappear", () => {
+  const db = load("/nonexistent"); const { code } = ensureCode(db, A); bind(db, { wallet: B, code, cluster: "devnet" });
+  const e = earnings([row(B, 10_000)], db);
+  assert.deepEqual(pending(e, []).map((p) => [p.wallet, p.raw]), [[A, 2000n], [B, 1000n]]);
+  const partial = pending(e, [{ wallet: A, mint: MINT, raw: "1500" }, { wallet: B, mint: MINT, raw: "1000" }]);
+  assert.deepEqual(partial.map((p) => [p.wallet, p.raw]), [[A, 500n]]);
+  assert.equal(partial[0].usd, 500 / 2000 * (0.00002 * 200));
+});
+
+test("save is atomic and load round-trips", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ref-")), f = path.join(dir, "referrals.json");
+  const db = load(f); ensureCode(db, A); save(f, db);
+  assert.equal(load(f).wallets[A].code, codeFor(A));
+  assert.deepEqual(fs.readdirSync(dir), ["referrals.json"]);
+  assert.equal(REFEREE_BPS, 1000);
+});
+
+test("ledger: a sent row counts as paid, a void row cancels it, landed adds nothing; unsettled = sent without an answer", async () => {
+  const { effectivePayouts, unsettledPayouts } = await import("./ledger.ts");
+  const db = load("/nonexistent"); ensureCode(db, A); bind(db, { wallet: B, code: codeFor(A), cluster: "devnet" });
+  const earn = earnings([row(B, 10_000)], db);              // A earns 2000 raw (20 %), B gets 1000 raw back
+  const sent = { status: "sent", wallet: A, mint: MINT, raw: "2000", signature: "s1" };
+  assert.deepEqual(pending(earn, [sent]).map((p) => p.wallet), [B]);                       // A paid (sent), B still due
+  assert.deepEqual(pending(earn, [sent, { status: "landed", wallet: A, mint: MINT, raw: "0", signature: "s1" }]).map((p) => p.wallet), [B]);
+  const voided = [sent, { status: "void", wallet: A, mint: MINT, raw: "-2000", signature: "s1" }];
+  assert.deepEqual(pending(earn, voided).map((p) => p.wallet).sort(), [A, B].sort());      // voided: A due again
+  assert.equal(effectivePayouts(voided).length, 0);
+  assert.equal(effectivePayouts([sent, { wallet: B, mint: MINT, raw: "1", signature: "legacy" }]).length, 2);
+  assert.deepEqual(unsettledPayouts([sent]).map((p) => p.signature), ["s1"]);
+  assert.equal(unsettledPayouts([sent, { status: "landed", signature: "s1", raw: "0" }]).length, 0);
+});

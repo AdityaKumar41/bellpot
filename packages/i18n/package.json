@@ -1,0 +1,10 @@
+{
+  "name": "@bellpot/i18n",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs",
+    "./*.json": "./*.json"
+  }
+}

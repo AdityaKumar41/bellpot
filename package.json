@@ -1,0 +1,30 @@
+{
+  "name": "bellpot",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "packageManager": "pnpm@12.11.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm --filter @bellpot/web build",
+    "dev": "pnpm --parallel --filter @bellpot/web --filter @bellpot/server dev",
+    "api": "pnpm --filter @bellpot/server api",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm test:unit",
+    "test:unit": "pnpm --filter @bellpot/server test",
+    "test:program": "pnpm --filter @bellpot/solana-tests test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "sync:idl": "node tools/sync-idl.mjs",
+    "setup:hooks": "git config core.hooksPath .githooks"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.10",
+    "typescript-eslint": "^8.72.0"
+  }
+}

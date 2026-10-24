@@ -1,0 +1,149 @@
+// What a market is about: the stock, read from its on-chain metric tag "<SYMBOL>.close:<YYYY-MM-DD>" (the New York
+// session whose official close is compared with the previous close), and the token it is staked in, looked up by mint
+// in /api/stocks (one stock can trade as several tokens from different issuers; each token has its own pool).
+// Amounts on-chain are raw token units; wallets show them times the token's ScaledUiAmount multiplier (dividends and
+// splits), and so does this page. Thresholds are the move in ppm (1 ppm = 0.01 bp).
+import type { MarketView } from "./chain-core";
+import { API_BASE } from "./config";
+import { dayEnd, fmtDay, fmtHm } from "./time";
+import { dayLocale, t } from "./i18n";
+
+type TokenInfo = { token: string; issuer: string; decimals: number; symbol: string; name: string; faucetUi?: number; mainnetMint?: string; mint?: string; mock?: boolean };
+export type Category = "stocks" | "preipo" | "memes";
+/** Tab labels in the active language. Called during render, after the dictionary is bound. */
+export function categoryList(): [Category, string][] {
+  return [
+    ["stocks", t("cat.stocks")],
+    ["preipo", t("cat.preipo")],
+    ["memes", t("cat.memes")],
+  ];
+}
+export const categoryName = (category: string) => categoryList().find(([key]) => key === category)?.[1] ?? category;
+export const STOCK_NAMES: Record<string, string> = { SPCX: "SpaceX", TSLA: "Tesla", NVDA: "NVIDIA", SPY: "S&P 500 ETF" };
+/** Per listed symbol: which category it belongs to, how it settles ("close" = official close, "day" = on-chain price
+ *  over a UTC day), and whether it currently has a daily pool. */
+export const STOCK_META: Record<string, { category: Category; kind: "close" | "day"; active: boolean; icon: string | null; thresholdsBps: number[] }> = {};
+export let STOCK_ORDER = Object.keys(STOCK_NAMES);
+const byMint = new Map<string, TokenInfo>();
+const tokensByStock = new Map<string, TokenInfo[]>();
+const quotesByStock = new Map<string, { token: string; issuer: string }[]>();
+/** Listed stocks and their tokens on this network (falls back to names only when the API is unreachable). */
+const boot: any = (globalThis as any).__BOOT__ ?? null;   // data embedded in the page by the server (see chain.ts)
+let stocksLoaded = false;
+export async function loadStocks() {
+  if (stocksLoaded) return;
+  try {
+    const j = boot?.stocks ?? await (async () => { const r = await fetch(API_BASE + "/stocks"); if (!r.ok) throw new Error("stocks " + r.status); return r.json(); })();
+    stocksLoaded = true;
+    STOCK_ORDER = j.stocks.map((s: any) => s.symbol);
+    for (const s of j.stocks) {
+      STOCK_NAMES[s.symbol] = s.name;
+      STOCK_META[s.symbol] = { category: s.category ?? "stocks", kind: s.kind ?? "close", active: s.active !== false, icon: s.icon ?? null, thresholdsBps: s.thresholdsBps ?? [] };
+      quotesByStock.set(s.symbol, s.tokens.map((t: any) => ({ token: t.token, issuer: t.issuer })));
+      const list = s.tokens.filter((t: any) => t.mint).map((t: any) => ({ ...t, symbol: s.symbol, name: s.name }));
+      tokensByStock.set(s.symbol, list);
+      for (const t of list) byMint.set(mintKey(t.mint), t);
+    }
+  } catch {}
+}
+export const tokensOf = (symbol: string) => tokensByStock.get(symbol) ?? [];
+/** A mint as a map key: hex addresses compare case-insensitively (the chain checksums them, files keep them lowercase). */
+export const mintKey = (s: string) => (/^0x[0-9a-fA-F]{40}$/.test(s) ? s.toLowerCase() : s);
+export const tokenInfo = (m: MarketView) => byMint.get(mintKey(m.mint));
+/** "<SYMBOL>.close:<date>" = official close of a New York session; "<SYMBOL>.day:<date>" = on-chain close of a UTC day. */
+export function parseMetric(tag: string) {
+  const m = tag.match(/^([A-Za-z0-9$_-]{1,20})\.(close|day):(\d{4}-\d{2}-\d{2})$/);
+  return m ? { symbol: m[1], kind: m[2] as "close" | "day", date: m[3] } : null;
+}
+export const symbolOf = (m: MarketView) => parseMetric(m.metric)?.symbol ?? "?";
+export const kindOf = (m: MarketView) => parseMetric(m.metric)?.kind ?? "close";
+export const categoryOf = (symbol: string): Category => STOCK_META[symbol]?.category ?? "stocks";
+export const stockName = (m: MarketView) => STOCK_NAMES[symbolOf(m)] ?? symbolOf(m);
+export const tokenSymbol = (m: MarketView) => tokenInfo(m)?.token ?? t("tok.shares");
+export const issuerOf = (m: MarketView) => tokenInfo(m)?.issuer ?? "";
+export const sessionLabel = (date: string) => new Date(date + "T12:00:00Z").toLocaleDateString(dayLocale(), { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+/** The moment the price that settles a market is fixed: the end of the UTC day, or the New York closing bell (the
+ *  result is asked for server/stock-templates.json resolveDelaySecs = 30 min after it, early closes included). */
+export const closeMoment = (m: MarketView, p = parseMetric(m.metric)) => (p?.kind === "day" ? dayEnd(p.date) : m.resolveAfterTs - 1800);
+export function question(m: MarketView) {
+  const p = parseMetric(m.metric); if (!p) return m.metric;
+  // an on-chain day closes at a moment (the end of the UTC day): name it on the viewer's clock, not as "a UTC date"
+  const c = closeMoment(m, p);
+  return t("q.at", { sym: p.symbol, time: fmtHm(c), day: fmtDay(c) });
+}
+
+/** A move in ppm as a signed percentage, floored to whole basis points. Thresholds are whole basis points, so the
+ *  floored figure always sits in the same range as the exact value (−1.7501 % shows as −1.76 %, never −1.75 %). */
+export function fmtMove(ppm: number) {
+  const bps = Math.floor(ppm / 100);
+  return (bps > 0 ? "+" : bps < 0 ? "−" : "") + (Math.abs(bps) / 100).toFixed(2) + "%";
+}
+const fmtThr = (ppm: number) => (ppm > 0 ? "+" : ppm < 0 ? "−" : "") + (Math.abs(ppm) / 10000).toFixed(2).replace(/\.?0+$/, "") + "%";
+/** Short label of bucket i, e.g. "< −1.75%", "−1.75% to 0%", "0% to +2%", "≥ +2%". */
+export function bucketLabel(m: MarketView, i: number) {
+  const thr = m.thresholds, n = m.nBuckets;
+  if (n === 2 && thr[0] === 0) return i === 1 ? t("bucket.upOrFlat") : t("bucket.down");
+  if (i === 0) return `< ${fmtThr(thr[0])}`;
+  if (i === n - 1) return `≥ ${fmtThr(thr[n - 2])}`;
+  return t("bucket.range", { a: fmtThr(thr[i - 1]), b: fmtThr(thr[i]) });
+}
+/** Plain-words name for the common layouts: four ranges with the middle cut at 0 (stocks), or three ranges cut
+ *  symmetrically around 0 (on-chain price markets: down / flat / up; memes say dump / flat / pump). */
+export function bucketName(m: MarketView, i: number) {
+  if (m.nBuckets === 4 && m.thresholds[1] === 0) return t(["b4.bigDrop", "b4.smallDrop", "b4.smallGain", "b4.bigGain"][i]);
+  if (m.nBuckets === 3 && m.thresholds[0] < 0 && m.thresholds[1] > 0) return t((categoryOf(symbolOf(m)) === "memes" ? ["b3.dump", "b3.flat", "b3.pump"] : ["b3.down", "b3.flat", "b3.up"])[i]);
+  return "";
+}
+
+/** Raw on-chain units → what the holder's wallet shows (decimals and the dividend/split multiplier applied). */
+export const uiAmount = (m: MarketView, raw: number) => (raw / 10 ** m.decimals) * (m.multiplier || 1);
+/** Shares as typed by the user → raw units, rounded down so a stake never exceeds what was typed. The tiny nudge
+ *  before flooring absorbs binary float error (0.29 × 1e8 is 28999999.999999996 in JS, which floored to 0.28999999
+ *  shares on-chain); a millionth of a raw unit is far below anything a wallet can hold. */
+export const toRaw = (m: MarketView, ui: number) => Math.floor(((ui || 0) / (m.multiplier || 1)) * 10 ** m.decimals + 1e-6);
+export const fmtAmt = (m: MarketView, raw: number, digits = 4) => uiAmount(m, raw).toLocaleString("en-US", { maximumFractionDigits: digits });
+
+// Live token prices from the API (Jupiter), keyed by token symbol; used only for a dollar estimate next to share counts.
+let prices: Record<string, { usd: number; stock: number | null; mark?: number | null; prevClose?: { date: string; close: number; samples: number } | null } | null> = {};
+let pricesFromBoot = !!boot?.prices;
+if (pricesFromBoot) prices = boot.prices;
+export async function loadPrices() {
+  if (pricesFromBoot) { pricesFromBoot = false; return prices; }   // first paint uses the embedded prices
+  try { const r = await fetch(API_BASE + "/prices"); if (r.ok) prices = (await r.json()).prices ?? {}; } catch {}
+  return prices;
+}
+export function usdOf(m: MarketView, raw: number) {
+  const p = prices[tokenSymbol(m)]?.usd; if (!p) return "";
+  const v = uiAmount(m, raw) * p;
+  return "≈ $" + v.toLocaleString("en-US", { maximumFractionDigits: v < 100 ? 2 : 0 });
+}
+/** Dollar price of one share of this market's token (Jupiter, mainnet token), or null when unknown. */
+export const priceOf = (m: MarketView) => prices[tokenSymbol(m)]?.usd ?? null;
+/** Live dollar quote for a listed symbol, from whichever of its tokens Jupiter is pricing. */
+export function stockQuote(symbol: string): { usd: number; stock: number | null; token: string; issuer: string } | null {
+  for (const quote of quotesByStock.get(symbol) ?? []) {
+    const row = prices[quote.token];
+    if (row?.usd) return { usd: row.usd, stock: row.stock ?? null, token: quote.token, issuer: quote.issuer };
+  }
+  return null;
+}
+/** Smallest stake, in shares: the smallest power of ten (… 100, 10, 1, 0.1, 0.01 …) worth at least `minUsd` at price
+ *  `px`, so nobody has to divide by a share price to find the floor. Returned as the exponent, because 10 ** -2 is not
+ *  exactly 0.01 and the label has to be. */
+export function minUnitExp(px: number, minUsd: number, decimals: number) {
+  let n = Math.ceil(Math.log10(minUsd / px));
+  while (10 ** n * px < minUsd * (1 - 1e-9)) n++;            // log10 can land one short at an exact power of ten
+  while (10 ** (n - 1) * px >= minUsd * (1 - 1e-9)) n--;
+  return Math.max(n, -decimals);
+}
+/** `v` shares rounded down to a whole number of 10 ** n units, as the text for the amount box (exact: no 0.30000000000000004). */
+export function snapUnit(v: number, n: number) {
+  const k = Math.floor(v / 10 ** n + 1e-9);
+  return n < 0 ? (k / 10 ** -n).toFixed(-n) : String(k * 10 ** n);
+}
+export const isUnitMultiple = (v: number, n: number) => Math.abs(v / 10 ** n - Math.round(v / 10 ** n)) < 1e-6;
+export const fmtUnit =(n: number) => (n >= 0 ? (10 ** n).toLocaleString("en-US") : (10 ** n).toFixed(-n));
+/** Latest known daily on-chain close of this token ({ date, close }), or null. */
+export const prevCloseOf = (m: MarketView) => prices[tokenSymbol(m)]?.prevClose ?? null;
+export const fmtPx = (v: number) => "$" + v.toLocaleString("en-US", { maximumFractionDigits: v < 1 ? 6 : 2 });
+export const fmtUsd = (v: number) => "$" + (v >= 1e6 ? (v / 1e6).toFixed(1) + "m" : v >= 1e4 ? (v / 1e3).toFixed(1) + "k" : v.toLocaleString("en-US", { maximumFractionDigits: v < 100 ? 2 : 0 }));

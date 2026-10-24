@@ -1,0 +1,11 @@
+packages:
+  - apps/*
+  - packages/*
+  - contracts/solana
+  - tools
+
+allowBuilds:
+  bigint-buffer: true
+  bufferutil: true
+  esbuild: true
+  utf-8-validate: true

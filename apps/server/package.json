@@ -1,0 +1,31 @@
+{
+  "name": "@bellpot/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/http/server.ts",
+    "api": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/http/server.ts",
+    "open-markets": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/markets/open.ts",
+    "resolve": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/markets/resolve.ts",
+    "sample-prices": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/markets/sample.ts",
+    "select-chain": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/markets/select.ts",
+    "verify-proposals": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/markets/verify.ts",
+    "heartbeat-check": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/ops/heartbeat.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@bellpot/contracts": "workspace:*",
+    "@bellpot/i18n": "workspace:*",
+    "@coral-xyz/anchor": "^0.32.1",
+    "@solana/spl-token": "^0.4.9",
+    "@solana/spl-token-metadata": "^0.1.6",
+    "@solana/web3.js": "^1.98.0",
+    "bs58": "^5.0.0",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "typescript": "^5.7.3"
+  }
+}

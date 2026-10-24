@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Runs before every commit (git config core.hooksPath .githooks): formatting of the staged files, then the optional
+# security check when this machine provides one (BELLPOT_SECURITY_CHECK=/path/to/check.sh).
+if command -v pnpm >/dev/null 2>&1; then
+  files=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(mjs|js|ts|json|md|ya?ml)$' || true)
+  if [ -n "$files" ]; then
+    echo "$files" | xargs pnpm exec prettier --check >/dev/null 2>&1 || {
+      echo "commit refused: staged files are not formatted — run 'pnpm format' and stage again"; exit 1; }
+  fi
+fi
+if [ -n "${BELLPOT_SECURITY_CHECK:-}" ] && [ -x "$BELLPOT_SECURITY_CHECK" ]; then
+  if git diff --cached --quiet -- contracts/solana/programs/; then SKIP_LOCALNET=1 "$BELLPOT_SECURITY_CHECK"; else "$BELLPOT_SECURITY_CHECK"; fi
+  rc=$?
+  [ "$rc" = 0 ] || { echo "commit refused: security checks failed (see above)"; exit "$rc"; }
+fi
+exit 0

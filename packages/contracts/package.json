@@ -1,0 +1,11 @@
+{
+  "name": "@bellpot/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.mjs",
+    "./solana/idl.json": "./solana/idl.json",
+    "./solana/idl.ts": "./solana/idl.ts"
+  }
+}

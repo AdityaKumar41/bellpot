@@ -1,0 +1,14 @@
+# Legacy dense sources: they are formatted in the dedicated formatting pass, not by ordinary edits.
+apps/web/*.html
+apps/web/src/styles.css
+apps/server/src/**
+contracts/solana/tests/**
+tools/**
+
+node_modules
+dist
+target
+pnpm-lock.yaml
+data
+secrets
+*.log

@@ -1,0 +1,61 @@
+// Referral links (server/referrals.mjs). A visitor who lands with ?ref=CODE keeps the code in this browser; the
+// first bet the connected wallet places then binds the wallet to it — signed by the wallet, so only its owner can.
+import { API_BASE } from "./config";
+import { t } from "./i18n";
+import { encodeSig } from "./wallet";
+import type { Session } from "./chain-core";
+
+const KEY = "bellpot.ref";
+export const pendingReferral = () => { try { return localStorage.getItem(KEY); } catch { return null; } };
+const clear = () => { try { localStorage.removeItem(KEY); } catch {} };
+const notify = () => { try { document.dispatchEvent(new Event("bellpot:referral-bound")); } catch {} };
+
+export type ReferralLookup = { valid: boolean; referrer?: string; refereeBps?: number };
+
+/** Remember ?ref=CODE from the address bar. The bar itself is rendered by ReferralBar. */
+export function rememberReferralCode() {
+  if (typeof window === "undefined") return;
+  const code = new URLSearchParams(location.search).get("ref")?.trim().toUpperCase();
+  if (code && /^[A-Z0-9]{4,12}$/.test(code)) { try { localStorage.setItem(KEY, code); } catch {} }
+}
+
+export async function lookupReferral(code: string): Promise<ReferralLookup> {
+  const response = await fetch(`${API_BASE}/referral/lookup/${code}`);
+  return response.json();
+}
+
+/** On connect: if a code is pending and this wallet's only activity is its first bet, bind now (a bet whose confirmation
+ *  failed in the browser, or one placed on another device, still counts). Asks the API first so the wallet only ever
+ *  sees a signature prompt when the binding will go through. */
+export async function bindIfPending(s: Session): Promise<void> {
+  const code = pendingReferral(); if (!code) return;
+  try {
+    const j = await (await fetch(`${API_BASE}/referral/${s.address}`)).json();
+    if (j.bound) { clear(); notify(); return; }
+    if (j.firstBet) await bindReferralAfterBet(s);
+  } catch {}
+}
+
+/** After a confirmed bet: bind the wallet to the pending code. Returns a short note for the UI, or null. */
+export async function bindReferralAfterBet(s: Session): Promise<string | null> {
+  const code = pendingReferral(); if (!code) return null;
+  const wallet = s.address;
+  try {
+    // Sign-In-With-Solana where the wallet offers it: the wallet checks the domain is this page, so no other site can
+    // collect a binding for bellpot. Otherwise a plain message naming the site and the time (valid 10 minutes).
+    let body: Record<string, unknown>;
+    if (s.signIn) {
+      const { signedMessage, signature } = await s.signIn({ domain: location.host, address: wallet, statement: `Apply BellPot referral code ${code} to this wallet's first bet.`, uri: location.origin + "/", version: "1", nonce: `${code}${Math.random().toString(36).slice(2, 10)}`, issuedAt: new Date().toISOString() });
+      body = { wallet, code, signedMessage: encodeSig(signedMessage), signature: encodeSig(signature) };
+    } else {
+      const ts = Math.floor(Date.now() / 1000);
+      const sig = await s.signMessage(new TextEncoder().encode(`bellpot-referral v2\ndomain=${location.host}\nwallet=${wallet}\ncode=${code}\nts=${ts}`));
+      body = { wallet, code, ts, signature: encodeSig(sig) };
+    }
+    const r = await fetch(`${API_BASE}/referral/bind`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (r.ok) { clear(); notify(); return j.already ? null : t("ref.applied", { pct: (10).toFixed(0) }); }
+    if (j.permanent) { clear(); notify(); }   // wrong wallet for this link; stop asking
+    return null;
+  } catch { return null; }   // user declined the signature or network hiccup: the code stays for the next bet
+}

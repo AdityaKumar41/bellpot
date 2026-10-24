@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(dig:*)",
+      "Shell(sed:*)",
+      "Shell(set:*)",
+      "Shell(pnpm:*)",
+      "Shell(mkdir:*)",
+      "Shell(solana-keygen:*)",
+      "Shell(grep:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
